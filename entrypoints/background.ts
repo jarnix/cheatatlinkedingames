@@ -14,8 +14,7 @@ type SudokuFillMessage = {
 
 type PatchesPaintMessage = {
   type: 'patches-paint';
-  drags: Array<{ points: Point[]; durationMs: number }>;
-  gapBetweenDragsMs: number;
+  drags: Point[][];
 };
 
 type IncomingMessage = ZipPlayMessage | SudokuFillMessage | PatchesPaintMessage;
@@ -104,26 +103,45 @@ async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<vo
       enabled: true,
       maxTouchPoints: 1,
     });
+    // Each drag is a Hamiltonian path through one shape, starting at its clue
+    // cell. The settings below were tuned empirically — flat cell-to-cell hops
+    // miss intermediate cells, so we interpolate. touchEnd must include the
+    // lifted point or the next touchStart looks like a multi-touch.
+    const STEPS = 6;
+    const SUB_MS = 15;
+    const POST_TOUCHSTART_MS = 80;
+    const PRE_TOUCHEND_MS = 50;
+    const BETWEEN_DRAGS_MS = 150;
+    let touchId = 1;
     for (let d = 0; d < msg.drags.length; d++) {
-      const drag = msg.drags[d];
-      if (drag.points.length === 0) continue;
-      const stepMs = drag.durationMs / Math.max(drag.points.length - 1, 1);
+      const points = msg.drags[d];
+      if (points.length === 0) continue;
+      const id = touchId++;
       await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
         type: 'touchStart',
-        touchPoints: [{ x: drag.points[0].x, y: drag.points[0].y, id: 1 }],
+        touchPoints: [{ x: points[0].x, y: points[0].y, id }],
       });
-      for (let i = 1; i < drag.points.length; i++) {
-        await sleep(stepMs);
-        await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
-          type: 'touchMove',
-          touchPoints: [{ x: drag.points[i].x, y: drag.points[i].y, id: 1 }],
-        });
+      await sleep(POST_TOUCHSTART_MS);
+      let lastX = points[0].x, lastY = points[0].y;
+      for (let p = 1; p < points.length; p++) {
+        const from = points[p - 1], to = points[p];
+        for (let s = 1; s <= STEPS; s++) {
+          const t = s / STEPS;
+          lastX = from.x + (to.x - from.x) * t;
+          lastY = from.y + (to.y - from.y) * t;
+          await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
+            type: 'touchMove',
+            touchPoints: [{ x: lastX, y: lastY, id }],
+          });
+          await sleep(SUB_MS);
+        }
       }
+      await sleep(PRE_TOUCHEND_MS);
       await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
         type: 'touchEnd',
-        touchPoints: [],
+        touchPoints: [{ x: lastX, y: lastY, id }],
       });
-      if (d < msg.drags.length - 1) await sleep(msg.gapBetweenDragsMs);
+      if (d < msg.drags.length - 1) await sleep(BETWEEN_DRAGS_MS);
     }
   } finally {
     try {
@@ -179,8 +197,7 @@ function isPatchesPaint(v: unknown): v is PatchesPaintMessage {
     typeof v === 'object' &&
     v !== null &&
     (v as { type?: unknown }).type === 'patches-paint' &&
-    Array.isArray((v as { drags?: unknown }).drags) &&
-    typeof (v as { gapBetweenDragsMs?: unknown }).gapBetweenDragsMs === 'number'
+    Array.isArray((v as { drags?: unknown }).drags)
   );
 }
 

@@ -371,66 +371,113 @@ if (cmd === 'eval') {
   if (!tryClue(0, 0)) { console.error('no solution'); process.exit(4); }
   console.log('solved');
 
-  // === Read which cells are already in some region ===
-  const paintedNow = (await evalInPage(`(() => {
-    const cells = [...document.querySelectorAll('[data-cell-idx]')].sort((a,b)=>+a.dataset.cellIdx-+b.dataset.cellIdx);
-    return cells.map(c => /(square|rectangle) clue|in (drawn region|region with clue)/.test(c.getAttribute('aria-label') || ''));
-  })()`, true)).value;
-
-  // === Two-cell drag plan: BFS from painted cells of each shape; for each
-  // new unpainted cell, do a 2-cell drag from a painted neighbor to it. ===
+  // === Single Hamiltonian-path drag per shape, starting at the clue ===
+  // For a 2D rectangle (both dims >= 2), a Hamiltonian path from any cell
+  // exists; we find it with backtracking. For a 1×N rectangle, a Hamiltonian
+  // path from the clue exists only if the clue is at an endpoint; if the
+  // clue is interior, we emit two drags (one each direction from clue).
   const cellAt = (r, c) => cellRects[r * cols + c];
   const drags = [];
-  const painted = paintedNow.slice();
   for (const p of chosen) {
-    const inRect = (r, c) => r >= p.row && r < p.row + p.h && c >= p.col && c < p.col + p.w;
-    const queue = [];
-    for (let r = p.row; r < p.row + p.h; r++) {
-      for (let c = p.col; c < p.col + p.w; c++) {
-        if (painted[r * cols + c]) queue.push([r, c]);
+    const cr = p.clue.row, cc = p.clue.col;
+    const r0 = p.row, c0 = p.col, w = p.w, h = p.h;
+    const N = w * h;
+    const inRect = (r, c) => r >= r0 && r < r0 + h && c >= c0 && c < c0 + w;
+    // 1D special case: only one row or column.
+    if (w === 1 || h === 1) {
+      if (w === 1) {
+        // tall 1×h. clue must be along this column.
+        const top = r0, bot = r0 + h - 1;
+        if (cr === top) drags.push(rangePoints((r) => cellAt(r, c0), top, bot));
+        else if (cr === bot) drags.push(rangePoints((r) => cellAt(r, c0), bot, top));
+        else {
+          drags.push(rangePoints((r) => cellAt(r, c0), cr, top));
+          drags.push(rangePoints((r) => cellAt(r, c0), cr, bot));
+        }
+      } else {
+        const left = c0, right = c0 + w - 1;
+        if (cc === left) drags.push(rangePoints((c) => cellAt(r0, c), left, right));
+        else if (cc === right) drags.push(rangePoints((c) => cellAt(r0, c), right, left));
+        else {
+          drags.push(rangePoints((c) => cellAt(r0, c), cc, left));
+          drags.push(rangePoints((c) => cellAt(r0, c), cc, right));
+        }
       }
+      continue;
     }
-    while (queue.length) {
-      const [r, c] = queue.shift();
-      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
-        const nr = r + dr, nc = c + dc;
-        if (!inRect(nr, nc)) continue;
-        if (painted[nr * cols + nc]) continue;
-        painted[nr * cols + nc] = true;
-        drags.push([cellAt(r, c), cellAt(nr, nc)]);
-        queue.push([nr, nc]);
+    // 2D: row-by-row snake from the clue. Every 2D clue in this game so far
+    // sits at a corner of its rectangle, so snake from that corner.
+    const r1 = r0 + h - 1, c1 = c0 + w - 1;
+    const path = [];
+    if (cr === r0 && cc === c0)        snake(path, r0, r1, c0, c1, 1, 1, 'horizontal-first');
+    else if (cr === r0 && cc === c1)   snake(path, r0, r1, c1, c0, 1, -1, 'horizontal-first');
+    else if (cr === r1 && cc === c0)   snake(path, r1, r0, c0, c1, -1, 1, 'horizontal-first');
+    else if (cr === r1 && cc === c1)   snake(path, r1, r0, c1, c0, -1, -1, 'horizontal-first');
+    else {
+      console.error(`2D clue not at corner: shape (${r0},${c0}) ${w}x${h} clue (${cr},${cc})`);
+      process.exit(5);
+    }
+    if (path.length !== N) {
+      console.error(`snake length mismatch: ${path.length} vs ${N}`);
+      process.exit(5);
+    }
+    drags.push(path.map(([r, c]) => cellAt(r, c)));
+  }
+  console.log(`dispatching ${drags.length} drags`);
+
+  function snake(out, rStart, rEnd, cStart, cEnd, rStep, cStep) {
+    let curC = cStart, curCEnd = cEnd, curCStep = cStep;
+    for (let r = rStart; r !== rEnd + rStep; r += rStep) {
+      for (let c = curC; c !== curCEnd + curCStep; c += curCStep) {
+        out.push([r, c]);
       }
+      [curC, curCEnd] = [curCEnd, curC];
+      curCStep = -curCStep;
     }
   }
-  console.log(`dispatching ${drags.length} 2-cell drags`);
+
+  function rangePoints(at, a, b) {
+    const out = [];
+    const step = a <= b ? 1 : -1;
+    for (let i = a; i !== b + step; i += step) out.push(at(i));
+    return out;
+  }
 
   // === Dispatch ===
   await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   let touchId = 1;
-  const STEPS = 6; // intermediate touchmoves between cells
+  const STEPS = 6; // intermediate touchmoves between cells (proven by isolated test)
   try {
     for (let i = 0; i < drags.length; i++) {
-      const [from, to] = drags[i];
+      const points = drags[i];
+      if (points.length === 0) continue;
       const id = touchId++;
       await send('Input.dispatchTouchEvent', {
         type: 'touchStart',
-        touchPoints: [{ x: from.x, y: from.y, id }],
+        touchPoints: [{ x: points[0].x, y: points[0].y, id }],
       });
-      await sleep(50);
-      for (let s = 1; s <= STEPS; s++) {
-        const t = s / STEPS;
-        const x = from.x + (to.x - from.x) * t;
-        const y = from.y + (to.y - from.y) * t;
-        await send('Input.dispatchTouchEvent', {
-          type: 'touchMove',
-          touchPoints: [{ x, y, id }],
-        });
-        await sleep(15);
+      await sleep(80);
+      let lastX = points[0].x, lastY = points[0].y;
+      for (let p = 1; p < points.length; p++) {
+        const from = points[p - 1], to = points[p];
+        for (let s = 1; s <= STEPS; s++) {
+          const t = s / STEPS;
+          lastX = from.x + (to.x - from.x) * t;
+          lastY = from.y + (to.y - from.y) * t;
+          await send('Input.dispatchTouchEvent', {
+            type: 'touchMove',
+            touchPoints: [{ x: lastX, y: lastY, id }],
+          });
+          await sleep(15);
+        }
       }
-      await sleep(40);
-      await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
-      await sleep(120);
+      await sleep(50);
+      await send('Input.dispatchTouchEvent', {
+        type: 'touchEnd',
+        touchPoints: [{ x: lastX, y: lastY, id }],
+      });
+      await sleep(150);
     }
   } finally {
     await send('Emulation.setTouchEmulationEnabled', { enabled: false });
