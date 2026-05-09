@@ -9,6 +9,7 @@ A Chrome extension that auto-solves LinkedIn's daily puzzle games. Built with [W
 | Zip | `linkedin.com/games/zip/` | working |
 | Mini Sudoku | `linkedin.com/games/mini-sudoku/` | working |
 | Patches | `linkedin.com/games/patches/` | working |
+| Tango | `linkedin.com/games/tango/` | working |
 
 ## How it works
 
