@@ -17,7 +17,17 @@ type PatchesPaintMessage = {
   drags: Point[][];
 };
 
-type IncomingMessage = ZipPlayMessage | SudokuFillMessage | PatchesPaintMessage;
+type TangoFillMessage = {
+  type: 'tango-fill';
+  clicks: Array<{ x: number; y: number; button: 'left' | 'right' }>;
+  gapMs: number;
+};
+
+type IncomingMessage =
+  | ZipPlayMessage
+  | SudokuFillMessage
+  | PatchesPaintMessage
+  | TangoFillMessage;
 
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -30,6 +40,7 @@ export default defineBackground(() => {
     if (isZipPlay(msg)) work = zipPlay(tabId, msg);
     else if (isSudokuFill(msg)) work = sudokuFill(tabId, msg);
     else if (isPatchesPaint(msg)) work = patchesPaint(tabId, msg);
+    else if (isTangoFill(msg)) work = tangoFill(tabId, msg);
     if (!work) return;
 
     work
@@ -155,6 +166,27 @@ async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<vo
   }
 }
 
+async function tangoFill(tabId: number, msg: TangoFillMessage): Promise<void> {
+  if (!browser.debugger) throw new Error('browser.debugger API not available');
+  const target = { tabId };
+  await browser.debugger.attach(target, '1.3');
+  try {
+    for (const c of msg.clicks) {
+      await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: c.x, y: c.y, button: c.button, clickCount: 1,
+      });
+      await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: c.x, y: c.y, button: c.button, clickCount: 1,
+      });
+      await sleep(msg.gapMs);
+    }
+  } finally {
+    try {
+      await browser.debugger.detach(target);
+    } catch {}
+  }
+}
+
 async function click(target: { tabId: number }, p: Point): Promise<void> {
   await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
     type: 'mousePressed',
@@ -198,6 +230,16 @@ function isPatchesPaint(v: unknown): v is PatchesPaintMessage {
     v !== null &&
     (v as { type?: unknown }).type === 'patches-paint' &&
     Array.isArray((v as { drags?: unknown }).drags)
+  );
+}
+
+function isTangoFill(v: unknown): v is TangoFillMessage {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { type?: unknown }).type === 'tango-fill' &&
+    Array.isArray((v as { clicks?: unknown }).clicks) &&
+    typeof (v as { gapMs?: unknown }).gapMs === 'number'
   );
 }
 
