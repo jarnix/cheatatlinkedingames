@@ -8,7 +8,7 @@ A Chrome extension that auto-solves LinkedIn's daily puzzle games. Built with [W
 |------|-----|--------|
 | Zip | `linkedin.com/games/zip/` | working |
 | Mini Sudoku | `linkedin.com/games/mini-sudoku/` | working |
-| Patches | `linkedin.com/games/patches/` | working |
+| Patches | `linkedin.com/games/patches/` | solver works; auto-play disabled (multi-drag execution unreliable) |
 
 ## How it works
 
@@ -42,11 +42,10 @@ scripts/
 
 ```sh
 npm install
-npm run build              # Chrome
-npm run build:firefox      # Firefox (Zip's touch driver works; debugger API is Chrome-only)
+npm run build
 ```
 
-Output goes to `.output/chrome-mv3/` (or `.output/firefox-mv3/`).
+Output goes to `.output/chrome-mv3/`. Firefox isn't supported because every game's play step uses `chrome.debugger`, which Firefox doesn't expose to extensions.
 
 ## Install (Chrome)
 

@@ -5,20 +5,37 @@ type Point = { x: number; y: number };
 type Drag = { points: Point[]; durationMs: number };
 
 export async function play(board: PatchesBoard, placements: Placement[]): Promise<void> {
-  const drags: Drag[] = [];
-  for (const p of placements) drags.push(...buildDragsForPlacement(board, p));
-
-  console.log(`[patches-cheat] ${placements.length} shapes, ${drags.length} drags total`);
-
-  const response = (await browser.runtime.sendMessage({
-    type: 'patches-paint',
-    drags,
-    gapBetweenDragsMs: 80,
-  })) as { ok: boolean; error?: string } | undefined;
-
-  if (!response?.ok) {
-    console.error('[patches-cheat] play failed:', response?.error ?? 'no response');
+  // Auto-play is disabled until the multi-drag execution model is understood.
+  // The solver below is correct (verified against the live grid), but driving
+  // the touch gestures in batch has cumulative state issues — drags that work
+  // in isolation produce inconsistent paint/unpaint behavior when chained, and
+  // I don't yet have a model for why. Print the tiling so the player can see
+  // the solution and fill it in manually.
+  console.log('[patches-cheat] solution found, auto-play disabled (see lib/patches/play.ts)');
+  for (const p of placements) {
+    console.log(
+      `  ${p.clue.color}  ${p.clue.kind.padEnd(7)}  ${p.w}x${p.h}  at (r=${p.row}, c=${p.col})` +
+        (p.clue.size != null ? `  [size=${p.clue.size}]` : ''),
+    );
   }
+  const grid: string[][] = Array.from({ length: board.rows }, () =>
+    Array<string>(board.cols).fill('.'),
+  );
+  placements.forEach((p, i) => {
+    const tag = i.toString(36);
+    for (let dr = 0; dr < p.h; dr++) {
+      for (let dc = 0; dc < p.w; dc++) {
+        grid[p.row + dr][p.col + dc] = tag;
+      }
+    }
+  });
+  console.log('[patches-cheat] tiling:');
+  for (const row of grid) console.log('  ' + row.join(' '));
+
+  // The drag-decomposition code is kept around for the eventual fix.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const _drags: Drag[] = [];
+  for (const p of placements) _drags.push(...buildDragsForPlacement(board, p));
 }
 
 /**

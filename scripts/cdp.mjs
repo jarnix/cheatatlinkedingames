@@ -4,6 +4,7 @@
 //   node scripts/cdp.mjs grid                 (read grid via the same logic the extension uses)
 //   node scripts/cdp.mjs walls                (dump computed border styles for every cell)
 //   node scripts/cdp.mjs play [durationMs]    (solve and drag via trusted touch events; default 1500ms)
+//   node scripts/cdp.mjs patches              (solve patches, paint via touch drags — same algorithm as the extension)
 //
 // Connects to the first tab matching linkedin.com/games/zip on http://localhost:9222.
 
@@ -267,6 +268,170 @@ if (cmd === 'eval') {
       });
     }
     await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  } finally {
+    await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  }
+  console.log('done');
+} else if (cmd === 'patches') {
+  // Read board, solve, and dispatch the same multi-drag plan as the extension.
+  const probe = `
+    (() => {
+      const grid = document.querySelector('[data-testid="interactive-grid"]');
+      if (!grid) return { error: 'no grid' };
+      const cells = [...grid.querySelectorAll('[data-cell-idx]')]
+        .sort((a, b) => +a.dataset.cellIdx - +b.dataset.cellIdx);
+      const total = cells.length;
+      const styleVar = (grid.getAttribute('style') || '').match(/--[\\w-]+\\s*:\\s*(\\d+)/);
+      const cols = styleVar ? Number(styleVar[1]) : Math.round(Math.sqrt(total));
+      const rows = total / cols;
+      const clues = [];
+      for (let i = 0; i < cells.length; i++) {
+        const aria = cells[i].getAttribute('aria-label') || '';
+        let kind = null;
+        if (/wide rectangle clue/i.test(aria)) kind = 'wide';
+        else if (/tall rectangle clue/i.test(aria)) kind = 'tall';
+        else if (/square clue/i.test(aria)) kind = 'square';
+        if (!kind) continue;
+        const sm = aria.match(/(\\d+)\\s+cells?/i);
+        clues.push({ cellIdx: i, row: Math.floor(i / cols), col: i % cols, kind, size: sm ? +sm[1] : null });
+      }
+      const cellRects = cells.map(c => {
+        const r = c.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      });
+      return { rows, cols, total, clues, cellRects };
+    })()
+  `;
+  const data = (await evalInPage(probe, true)).value;
+  if (data.error) {
+    console.error('probe error:', data);
+    process.exit(3);
+  }
+  const { rows, cols, clues, cellRects } = data;
+  console.log(`board ${rows}x${cols}, ${clues.length} clues`);
+
+  // === Solver (identical to lib/patches/solve.ts) ===
+  const enumerateSizes = (kind, size) => {
+    const out = [];
+    if (kind === 'square') {
+      if (size != null) {
+        const s = Math.round(Math.sqrt(size));
+        if (s * s === size && s <= Math.min(rows, cols)) out.push({ w: s, h: s });
+      } else for (let s = 1; s <= Math.min(rows, cols); s++) out.push({ w: s, h: s });
+    } else if (kind === 'wide') {
+      for (let w = 2; w <= cols; w++) for (let h = 1; h < w && h <= rows; h++) {
+        if (size != null && w * h !== size) continue;
+        out.push({ w, h });
+      }
+    } else {
+      for (let h = 2; h <= rows; h++) for (let w = 1; w < h && w <= cols; w++) {
+        if (size != null && w * h !== size) continue;
+        out.push({ w, h });
+      }
+    }
+    return out;
+  };
+  const enumeratePlacements = (clue) => {
+    const out = [];
+    for (const { w, h } of enumerateSizes(clue.kind, clue.size)) {
+      const minR = Math.max(0, clue.row - (h - 1));
+      const maxR = Math.min(rows - h, clue.row);
+      const minC = Math.max(0, clue.col - (w - 1));
+      const maxC = Math.min(cols - w, clue.col);
+      for (let r = minR; r <= maxR; r++) for (let c = minC; c <= maxC; c++)
+        out.push({ clue, row: r, col: c, w, h });
+    }
+    out.sort((a, b) => b.w * b.h - a.w * a.h);
+    return out;
+  };
+  const candidates = clues.map(enumeratePlacements);
+  const occupied = new Int32Array(rows * cols).fill(-1);
+  const chosen = clues.map(() => null);
+  const order = clues.map((_, i) => i).sort((a, b) => candidates[a].length - candidates[b].length);
+  const fits = (p) => {
+    for (let dr = 0; dr < p.h; dr++) for (let dc = 0; dc < p.w; dc++)
+      if (occupied[(p.row + dr) * cols + (p.col + dc)] !== -1) return false;
+    return true;
+  };
+  const mark = (p, v) => {
+    for (let dr = 0; dr < p.h; dr++) for (let dc = 0; dc < p.w; dc++)
+      occupied[(p.row + dr) * cols + (p.col + dc)] = v;
+  };
+  const tryClue = (oi, area) => {
+    if (oi === clues.length) return area === rows * cols;
+    const ci = order[oi];
+    for (const p of candidates[ci]) {
+      if (!fits(p)) continue;
+      mark(p, ci); chosen[ci] = p;
+      if (tryClue(oi + 1, area + p.w * p.h)) return true;
+      mark(p, -1); chosen[ci] = null;
+    }
+    return false;
+  };
+  if (!tryClue(0, 0)) { console.error('no solution'); process.exit(4); }
+  console.log('solved');
+
+  // === Read which cells are already in some region ===
+  const paintedNow = (await evalInPage(`(() => {
+    const cells = [...document.querySelectorAll('[data-cell-idx]')].sort((a,b)=>+a.dataset.cellIdx-+b.dataset.cellIdx);
+    return cells.map(c => /(square|rectangle) clue|in (drawn region|region with clue)/.test(c.getAttribute('aria-label') || ''));
+  })()`, true)).value;
+
+  // === Two-cell drag plan: BFS from painted cells of each shape; for each
+  // new unpainted cell, do a 2-cell drag from a painted neighbor to it. ===
+  const cellAt = (r, c) => cellRects[r * cols + c];
+  const drags = [];
+  const painted = paintedNow.slice();
+  for (const p of chosen) {
+    const inRect = (r, c) => r >= p.row && r < p.row + p.h && c >= p.col && c < p.col + p.w;
+    const queue = [];
+    for (let r = p.row; r < p.row + p.h; r++) {
+      for (let c = p.col; c < p.col + p.w; c++) {
+        if (painted[r * cols + c]) queue.push([r, c]);
+      }
+    }
+    while (queue.length) {
+      const [r, c] = queue.shift();
+      for (const [dr, dc] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+        const nr = r + dr, nc = c + dc;
+        if (!inRect(nr, nc)) continue;
+        if (painted[nr * cols + nc]) continue;
+        painted[nr * cols + nc] = true;
+        drags.push([cellAt(r, c), cellAt(nr, nc)]);
+        queue.push([nr, nc]);
+      }
+    }
+  }
+  console.log(`dispatching ${drags.length} 2-cell drags`);
+
+  // === Dispatch ===
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let touchId = 1;
+  const STEPS = 6; // intermediate touchmoves between cells
+  try {
+    for (let i = 0; i < drags.length; i++) {
+      const [from, to] = drags[i];
+      const id = touchId++;
+      await send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x: from.x, y: from.y, id }],
+      });
+      await sleep(50);
+      for (let s = 1; s <= STEPS; s++) {
+        const t = s / STEPS;
+        const x = from.x + (to.x - from.x) * t;
+        const y = from.y + (to.y - from.y) * t;
+        await send('Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [{ x, y, id }],
+        });
+        await sleep(15);
+      }
+      await sleep(40);
+      await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await sleep(120);
+    }
   } finally {
     await send('Emulation.setTouchEmulationEnabled', { enabled: false });
   }
