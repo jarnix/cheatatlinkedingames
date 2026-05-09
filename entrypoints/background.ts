@@ -12,7 +12,13 @@ type SudokuFillMessage = {
   gapMs: number;
 };
 
-type IncomingMessage = ZipPlayMessage | SudokuFillMessage;
+type PatchesPaintMessage = {
+  type: 'patches-paint';
+  drags: Array<{ points: Point[]; durationMs: number }>;
+  gapBetweenDragsMs: number;
+};
+
+type IncomingMessage = ZipPlayMessage | SudokuFillMessage | PatchesPaintMessage;
 
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -24,6 +30,7 @@ export default defineBackground(() => {
     let work: Promise<void> | null = null;
     if (isZipPlay(msg)) work = zipPlay(tabId, msg);
     else if (isSudokuFill(msg)) work = sudokuFill(tabId, msg);
+    else if (isPatchesPaint(msg)) work = patchesPaint(tabId, msg);
     if (!work) return;
 
     work
@@ -88,6 +95,48 @@ async function sudokuFill(tabId: number, msg: SudokuFillMessage): Promise<void> 
   }
 }
 
+async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<void> {
+  if (!browser.debugger) throw new Error('browser.debugger API not available');
+  const target = { tabId };
+  await browser.debugger.attach(target, '1.3');
+  try {
+    await browser.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', {
+      enabled: true,
+      maxTouchPoints: 1,
+    });
+    for (let d = 0; d < msg.drags.length; d++) {
+      const drag = msg.drags[d];
+      if (drag.points.length === 0) continue;
+      const stepMs = drag.durationMs / Math.max(drag.points.length - 1, 1);
+      await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [{ x: drag.points[0].x, y: drag.points[0].y, id: 1 }],
+      });
+      for (let i = 1; i < drag.points.length; i++) {
+        await sleep(stepMs);
+        await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [{ x: drag.points[i].x, y: drag.points[i].y, id: 1 }],
+        });
+      }
+      await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
+        type: 'touchEnd',
+        touchPoints: [],
+      });
+      if (d < msg.drags.length - 1) await sleep(msg.gapBetweenDragsMs);
+    }
+  } finally {
+    try {
+      await browser.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', {
+        enabled: false,
+      });
+    } catch {}
+    try {
+      await browser.debugger.detach(target);
+    } catch {}
+  }
+}
+
 async function click(target: { tabId: number }, p: Point): Promise<void> {
   await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
     type: 'mousePressed',
@@ -122,6 +171,16 @@ function isSudokuFill(v: unknown): v is SudokuFillMessage {
     (v as { type?: unknown }).type === 'sudoku-fill' &&
     Array.isArray((v as { clicks?: unknown }).clicks) &&
     typeof (v as { gapMs?: unknown }).gapMs === 'number'
+  );
+}
+
+function isPatchesPaint(v: unknown): v is PatchesPaintMessage {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { type?: unknown }).type === 'patches-paint' &&
+    Array.isArray((v as { drags?: unknown }).drags) &&
+    typeof (v as { gapBetweenDragsMs?: unknown }).gapBetweenDragsMs === 'number'
   );
 }
 

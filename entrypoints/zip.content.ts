@@ -1,6 +1,6 @@
-import { readGrid } from '../lib/read-grid';
-import { solve } from '../lib/solve';
-import { play } from '../lib/play';
+import { readGrid } from '../lib/zip/read-grid';
+import { solve } from '../lib/zip/solve';
+import { play } from '../lib/zip/play';
 
 const TARGET_DURATION_MS = 1500;
 

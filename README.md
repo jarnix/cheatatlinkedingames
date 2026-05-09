@@ -8,6 +8,7 @@ A Chrome extension that auto-solves LinkedIn's daily puzzle games. Built with [W
 |------|-----|--------|
 | Zip | `linkedin.com/games/zip/` | working |
 | Mini Sudoku | `linkedin.com/games/mini-sudoku/` | working |
+| Patches | `linkedin.com/games/patches/` | working |
 
 ## How it works
 
@@ -15,7 +16,7 @@ Each game has its own content script that auto-fires when the puzzle DOM mounts:
 
 1. The content script reads the board state from the DOM and runs a solver in pure JS.
 2. It computes viewport coordinates for the moves it needs to make and sends them to the background service worker.
-3. The service worker attaches the [`chrome.debugger`](https://developer.chrome.com/docs/extensions/reference/api/debugger) API to the active tab and dispatches **trusted** input via the Chrome DevTools Protocol — `Input.dispatchTouchEvent` for Zip's drag, `Input.dispatchMouseEvent` for Sudoku's click-pairs.
+3. The service worker attaches the [`chrome.debugger`](https://developer.chrome.com/docs/extensions/reference/api/debugger) API to the active tab and dispatches **trusted** input via the Chrome DevTools Protocol — `Input.dispatchTouchEvent` for Zip's single drag and Patches' multi-drag region painting, `Input.dispatchMouseEvent` for Sudoku's click-pairs.
 4. The SW detaches as soon as the play completes, so the "this extension is debugging your browser" bar only flashes briefly.
 
 The CDP route is necessary because LinkedIn's games gate gameplay behind `isTrusted: true` events — `dispatchEvent` from page JS produces untrusted events that the games ignore.
@@ -27,13 +28,11 @@ entrypoints/
   background.ts            service worker (debugger attach + dispatch)
   zip.content.ts           Zip auto-fire content script
   mini-sudoku.content.ts   Mini Sudoku auto-fire content script
+  patches.content.ts       Patches auto-fire content script
 lib/
-  grid.ts, solve.ts        Zip solver (Hamiltonian path with ordered waypoints)
-  read-grid.ts, play.ts    Zip DOM reading + viewport-coord drag plan
-  sudoku/
-    read-board.ts          Sudoku DOM reading
-    solve.ts               Backtracking solver (6×6 with 2×3 boxes)
-    play.ts                Click-pair plan (cell → keypad button)
+  zip/                     Zip: Hamiltonian path with ordered waypoints
+  sudoku/                  Mini Sudoku: backtracking, 6×6 with 2×3 boxes
+  patches/                 Patches: rectangular tiling solver and drag plan
 scripts/
   cdp.mjs                  standalone CDP client used while reverse-engineering
                            new games. Commands: eval, listeners, grid, walls, play
