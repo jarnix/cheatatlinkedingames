@@ -1,4 +1,4 @@
-# cheatatlinkedingames
+# cheat at linkedin games
 
 A Chrome extension that auto-solves LinkedIn's daily puzzle games. Built with [WXT](https://wxt.dev/).
 
