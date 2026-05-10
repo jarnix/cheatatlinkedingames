@@ -70,8 +70,15 @@ function inferColsFromLayout(cells: HTMLElement[]): number | null {
 }
 
 function readWaypointNumber(node: HTMLElement): number | null {
-  const label = node.getAttribute('aria-label');
-  if (!label) return null;
-  const m = label.match(/\d+/);
-  return m ? Number(m[0]) : null;
+  // Prefer the visible digit in the cell text — that is locale-independent.
+  // aria-label on some locales reads "Row 3, column 7" first and the cell's
+  // number second, so a generic /\d+/ would grab the row number instead of
+  // the waypoint.
+  const text = (node.textContent ?? '').trim();
+  if (/^\d+$/.test(text)) return Number(text);
+  // Aria fallback. Match a digit that immediately follows a "number" keyword,
+  // not an arbitrary digit anywhere in the label.
+  const label = node.getAttribute('aria-label') ?? '';
+  const m = label.match(/(?:Numéro|Numero|Number|Waypoint|N°)\s*(\d+)/i);
+  return m ? Number(m[1]) : null;
 }
