@@ -2,10 +2,11 @@
   "name": "cheatatlinkedingames",
   "description": "Cheat at LinkedIn puzzle games (starting with Zip)",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "scripts": {
     "dev": "wxt",
+    "prebuild": "npm version patch --no-git-tag-version --allow-same-version",
     "build": "wxt build",
     "zip": "wxt zip",
     "compile": "tsc --noEmit",
