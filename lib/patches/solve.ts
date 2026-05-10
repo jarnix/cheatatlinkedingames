@@ -1,143 +1,161 @@
-import type { Clue, PatchesBoard, ShapeKind } from './read-board';
+import type { PatchesBoard } from './read-board';
 
-export type Placement = {
-  clue: Clue;
-  /** Top-left corner. */
-  row: number;
-  col: number;
-  /** Width and height of the rectangle. */
-  w: number;
-  h: number;
+export type RegionAssignment = {
+  /** For each cell index, the index of the clue/region it belongs to. */
+  ownerOf: Int32Array;
+  /** For each clue index (in board.clues order), the set of cell indices in
+   *  that region. */
+  regions: number[][];
 };
 
 /**
- * Tile every cell of the board with rectangles that satisfy each clue:
- * - 'square' kind: w === h
- * - 'wide' kind:  w >= 2 && h === 1
- * - 'tall' kind:  h >= 2 && w === 1
- * - if clue.size is set, w*h === clue.size
- * The rectangle must contain the clue cell. Each clue gets exactly one
- * rectangle, every cell ends up in exactly one rectangle.
+ * Tile every cell. Each clue's region is grown so that:
+ *  - 'square' kind: the region's cells fill an N×N bounding box (N≥1).
+ *  - 'wide' kind:   the region fills a w×h bounding box with w > h.
+ *  - 'tall' kind:   the region fills a w×h bounding box with h > w.
+ *  - 'freeform' kind: any connected polyomino of the clue's size.
+ *  - if `clue.size` is set, the region has exactly that many cells.
+ *
+ * Uses cell-by-cell backtracking that grows regions from clue cells outward.
  */
-export function solve(board: PatchesBoard): Placement[] | null {
+export function solve(board: PatchesBoard): RegionAssignment | null {
   const { rows, cols, clues } = board;
   const total = rows * cols;
+  const ownerOf = new Int32Array(total).fill(-1);
+  const regions: Set<number>[] = clues.map(() => new Set());
+  for (let ci = 0; ci < clues.length; ci++) {
+    const c = clues[ci];
+    ownerOf[c.cellIdx] = ci;
+    regions[ci].add(c.cellIdx);
+  }
 
-  // Each clue's candidate placements, sorted by descending size so the most
-  // constraining choices fail-fast.
-  const candidates = clues.map((c) => enumeratePlacements(c, rows, cols));
-  if (candidates.some((cs) => cs.length === 0)) return null;
+  const adjOf = (i: number): number[] => {
+    const r = Math.floor(i / cols), c = i % cols;
+    const out: number[] = [];
+    if (r > 0) out.push(i - cols);
+    if (r < rows - 1) out.push(i + cols);
+    if (c > 0) out.push(i - 1);
+    if (c < cols - 1) out.push(i + 1);
+    return out;
+  };
 
-  // Sum-of-sizes pruning: total area must equal rows*cols. If sum of min
-  // candidate sizes exceeds total, or sum of max sizes is below total, no go.
-  const minTotal = candidates.reduce((s, cs) => s + Math.min(...cs.map(area)), 0);
-  const maxTotal = candidates.reduce((s, cs) => s + Math.max(...cs.map(area)), 0);
-  if (minTotal > total || maxTotal < total) return null;
-
-  const occupied = new Int32Array(total).fill(-1); // -1 = free, else clue index
-  const chosen: (Placement | null)[] = clues.map(() => null);
-
-  // Order clues most-constrained-first (fewest candidates) so we backtrack
-  // out of dead branches earlier.
-  const order = clues.map((_, i) => i).sort((a, b) => candidates[a].length - candidates[b].length);
-
-  function tryClue(orderIdx: number, areaSoFar: number): boolean {
-    if (orderIdx === clues.length) {
-      return areaSoFar === total && allCovered(occupied);
+  const bbox = (region: Set<number>): { minR: number; maxR: number; minC: number; maxC: number } => {
+    let minR = rows, maxR = -1, minC = cols, maxC = -1;
+    for (const idx of region) {
+      const r = Math.floor(idx / cols), c = idx % cols;
+      if (r < minR) minR = r;
+      if (r > maxR) maxR = r;
+      if (c < minC) minC = c;
+      if (c > maxC) maxC = c;
     }
-    const clueIdx = order[orderIdx];
-    for (const p of candidates[clueIdx]) {
-      if (!fits(p, occupied, cols)) continue;
-      mark(p, occupied, cols, clueIdx);
-      chosen[clueIdx] = p;
-      if (tryClue(orderIdx + 1, areaSoFar + area(p))) return true;
-      mark(p, occupied, cols, -1);
-      chosen[clueIdx] = null;
+    return { minR, maxR, minC, maxC };
+  };
+
+  // Quick partial validity after tentatively adding a cell to a region.
+  function partialValid(ci: number): boolean {
+    const region = regions[ci];
+    const clue = clues[ci];
+    if (clue.size != null && region.size > clue.size) return false;
+    if (clue.kind === 'freeform') return true;
+    // Rectangle kinds: bounding box cells must be either in this region or
+    // still unclaimed (i.e. claimable later).
+    const { minR, maxR, minC, maxC } = bbox(region);
+    const w = maxC - minC + 1;
+    const h = maxR - minR + 1;
+    if (clue.kind === 'square' && w !== h) {
+      // Bounding box is non-square; could become square only by growing the
+      // shorter dimension. That's allowed if there's still room.
+      // But the bbox itself must still be enclosable in a square — i.e. once
+      // the region is "complete", w must equal h. We approximate by allowing
+      // the bbox to be non-square mid-growth, but reject if it exceeds size cap.
+      if (clue.size != null) {
+        const targetSide = Math.round(Math.sqrt(clue.size));
+        if (targetSide * targetSide !== clue.size) return false;
+        if (w > targetSide || h > targetSide) return false;
+      }
+    }
+    if (clue.kind === 'wide' && h > w + 0) {
+      // Could still grow wider; allow for now if sized clue still has room.
+    }
+    if (clue.kind === 'tall' && w > h + 0) {
+      // Same.
+    }
+    // bbox cells must not be claimed by other regions.
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
+        const idx = r * cols + c;
+        if (region.has(idx)) continue;
+        if (ownerOf[idx] !== -1) return false;
+      }
+    }
+    return true;
+  }
+
+  function finalValid(): boolean {
+    for (let ci = 0; ci < clues.length; ci++) {
+      const region = regions[ci];
+      const clue = clues[ci];
+      if (clue.size != null && region.size !== clue.size) return false;
+      if (clue.kind === 'freeform') continue;
+      const { minR, maxR, minC, maxC } = bbox(region);
+      const w = maxC - minC + 1;
+      const h = maxR - minR + 1;
+      if (region.size !== w * h) return false;
+      if (clue.kind === 'square' && w !== h) return false;
+      if (clue.kind === 'wide' && w <= h) return false;
+      if (clue.kind === 'tall' && h <= w) return false;
+    }
+    return true;
+  }
+
+  let claimed = clues.length;
+
+  function backtrack(): boolean {
+    if (claimed === total) return finalValid();
+    // Pick the most-constrained unclaimed cell that is adjacent to ≥1 region.
+    let bestCell = -1;
+    let bestOpts: number[] = [];
+    let bestCount = Infinity;
+    for (let i = 0; i < total; i++) {
+      if (ownerOf[i] !== -1) continue;
+      const candSet = new Set<number>();
+      for (const n of adjOf(i)) {
+        if (ownerOf[n] !== -1) candSet.add(ownerOf[n]);
+      }
+      if (candSet.size === 0) continue;
+      const valid: number[] = [];
+      for (const ci of candSet) {
+        const clue = clues[ci];
+        if (clue.size != null && regions[ci].size >= clue.size) continue;
+        valid.push(ci);
+      }
+      if (valid.length === 0) return false;
+      if (valid.length < bestCount) {
+        bestCount = valid.length;
+        bestCell = i;
+        bestOpts = valid;
+        if (bestCount === 1) break;
+      }
+    }
+    if (bestCell === -1) {
+      // No cell adjacent to any region: there are unclaimed cells unreachable.
+      return false;
+    }
+    for (const ci of bestOpts) {
+      regions[ci].add(bestCell);
+      ownerOf[bestCell] = ci;
+      claimed++;
+      if (partialValid(ci) && backtrack()) return true;
+      regions[ci].delete(bestCell);
+      ownerOf[bestCell] = -1;
+      claimed--;
     }
     return false;
   }
 
-  return tryClue(0, 0) ? (chosen as Placement[]) : null;
-}
-
-function enumeratePlacements(clue: Clue, rows: number, cols: number): Placement[] {
-  const out: Placement[] = [];
-  const sizes = enumerateSizes(clue.kind, clue.size, rows, cols);
-  for (const { w, h } of sizes) {
-    // The clue cell at (clue.row, clue.col) must lie inside the rectangle.
-    // For each (top-left) (r, c) such that r <= clue.row <= r+h-1 and same for col.
-    const minR = Math.max(0, clue.row - (h - 1));
-    const maxR = Math.min(rows - h, clue.row);
-    const minC = Math.max(0, clue.col - (w - 1));
-    const maxC = Math.min(cols - w, clue.col);
-    for (let r = minR; r <= maxR; r++) {
-      for (let c = minC; c <= maxC; c++) {
-        out.push({ clue, row: r, col: c, w, h });
-      }
-    }
-  }
-  // Sort by descending area so the solver explores larger shapes first;
-  // they're more constraining and fail-fast better.
-  out.sort((a, b) => area(b) - area(a));
-  return out;
-}
-
-function enumerateSizes(
-  kind: ShapeKind,
-  size: number | null,
-  rows: number,
-  cols: number,
-): Array<{ w: number; h: number }> {
-  // 'square' means w === h. 'wide' means w > h (any rectangle wider than tall,
-  // not just 1×N — e.g. 3×2 is a wide rectangle). 'tall' is the mirror.
-  const out: Array<{ w: number; h: number }> = [];
-  if (kind === 'square') {
-    if (size != null) {
-      const s = Math.round(Math.sqrt(size));
-      if (s * s === size && s >= 1 && s <= Math.min(rows, cols)) out.push({ w: s, h: s });
-    } else {
-      for (let s = 1; s <= Math.min(rows, cols); s++) out.push({ w: s, h: s });
-    }
-  } else if (kind === 'wide') {
-    for (let w = 2; w <= cols; w++) {
-      for (let h = 1; h < w && h <= rows; h++) {
-        if (size != null && w * h !== size) continue;
-        out.push({ w, h });
-      }
-    }
-  } else {
-    for (let h = 2; h <= rows; h++) {
-      for (let w = 1; w < h && w <= cols; w++) {
-        if (size != null && w * h !== size) continue;
-        out.push({ w, h });
-      }
-    }
-  }
-  return out;
-}
-
-function area(p: Placement | { w: number; h: number }): number {
-  return p.w * p.h;
-}
-
-function fits(p: Placement, occupied: Int32Array, cols: number): boolean {
-  for (let dr = 0; dr < p.h; dr++) {
-    for (let dc = 0; dc < p.w; dc++) {
-      if (occupied[(p.row + dr) * cols + (p.col + dc)] !== -1) return false;
-    }
-  }
-  return true;
-}
-
-function mark(p: Placement, occupied: Int32Array, cols: number, value: number): void {
-  for (let dr = 0; dr < p.h; dr++) {
-    for (let dc = 0; dc < p.w; dc++) {
-      occupied[(p.row + dr) * cols + (p.col + dc)] = value;
-    }
-  }
-}
-
-function allCovered(occupied: Int32Array): boolean {
-  for (let i = 0; i < occupied.length; i++) if (occupied[i] === -1) return false;
-  return true;
+  if (!backtrack()) return null;
+  return {
+    ownerOf,
+    regions: regions.map((s) => [...s]),
+  };
 }

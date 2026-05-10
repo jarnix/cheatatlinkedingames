@@ -1,4 +1,4 @@
-export type ShapeKind = 'square' | 'wide' | 'tall';
+export type ShapeKind = 'square' | 'wide' | 'tall' | 'freeform';
 
 export type Clue = {
   /** Cell index in row-major order. */
@@ -39,14 +39,13 @@ export function readBoard(): PatchesBoard | null {
     if (!kind) continue;
     const sizeMatch = aria.match(/(\d+)\s+cells?/i);
     const color = parseColor(cells[i].getAttribute('style') ?? '');
-    if (!color) continue;
     clues.push({
       cellIdx: i,
       row: Math.floor(i / cols),
       col: i % cols,
       kind,
       size: sizeMatch ? Number(sizeMatch[1]) : null,
-      color,
+      color: color ?? '',
     });
   }
 
@@ -59,6 +58,7 @@ function inferColsFromStyleVar(container: HTMLElement): number | null {
 }
 
 function parseKind(aria: string): ShapeKind | null {
+  if (/freeform clue/i.test(aria)) return 'freeform';
   if (/wide rectangle clue/i.test(aria)) return 'wide';
   if (/tall rectangle clue/i.test(aria)) return 'tall';
   if (/square clue/i.test(aria)) return 'square';
@@ -66,9 +66,6 @@ function parseKind(aria: string): ShapeKind | null {
 }
 
 function parseColor(style: string): string | null {
-  // Inline style holds the clue color in a hashed CSS custom property:
-  //   "--_0976c453: #00AFFF;" or "--_0976c453: 7C4DFF;"
-  // The value is sometimes prefixed with '#' and sometimes not.
   const m = style.match(/--[\w-]+\s*:\s*#?([0-9a-fA-F]{6})/);
   return m ? `#${m[1].toUpperCase()}` : null;
 }
