@@ -1,35 +1,36 @@
-import type { PatchesBoard } from './read-board';
+import type { Clue, PatchesBoard, ShapeKind } from './read-board';
 
 export type RegionAssignment = {
   /** For each cell index, the index of the clue/region it belongs to. */
   ownerOf: Int32Array;
-  /** For each clue index (in board.clues order), the set of cell indices in
-   *  that region. */
+  /** For each clue index, the set of cell indices in that region. */
   regions: number[][];
 };
 
 /**
- * Tile every cell. Each clue's region is grown so that:
- *  - 'square' kind: the region's cells fill an N×N bounding box (N≥1).
- *  - 'wide' kind:   the region fills a w×h bounding box with w > h.
- *  - 'tall' kind:   the region fills a w×h bounding box with h > w.
- *  - 'freeform' kind: any connected polyomino of the clue's size.
- *  - if `clue.size` is set, the region has exactly that many cells.
+ * Tile every cell of the board with regions that satisfy each clue:
+ *  - 'square' kind: w === h (any size)
+ *  - 'wide'   kind: w >  h (any aspect)
+ *  - 'tall'   kind: h >  w (any aspect)
+ *  - 'freeform' kind: any contiguous polyomino of the clue's required size
+ *  - if `clue.size` is set, the region has exactly that many cells
  *
- * Uses cell-by-cell backtracking that grows regions from clue cells outward.
+ * Strategy:
+ * 1. Enumerate every valid rectangle placement per non-freeform clue.
+ *    These counts stay small (tens per clue at most).
+ * 2. Backtrack over combinations of those placements, requiring that they
+ *    don't overlap and that their cumulative size equals
+ *    rows*cols minus the sum of sized freeform sizes.
+ * 3. For each viable rectangle assignment, run a cell-by-cell tiler on the
+ *    remaining cells using only the freeform clues. Freeforms have no shape
+ *    constraint (only size), so this stage is fast.
  */
 export function solve(board: PatchesBoard): RegionAssignment | null {
   const { rows, cols, clues } = board;
-  const total = rows * cols;
-  const ownerOf = new Int32Array(total).fill(-1);
-  const regions: Set<number>[] = clues.map(() => new Set());
-  for (let ci = 0; ci < clues.length; ci++) {
-    const c = clues[ci];
-    ownerOf[c.cellIdx] = ci;
-    regions[ci].add(c.cellIdx);
-  }
+  const TOTAL = rows * cols;
+  const allClueCells = new Set(clues.map((c) => c.cellIdx));
 
-  const adjOf = (i: number): number[] => {
+  const adj = (i: number): number[] => {
     const r = Math.floor(i / cols), c = i % cols;
     const out: number[] = [];
     if (r > 0) out.push(i - cols);
@@ -39,123 +40,184 @@ export function solve(board: PatchesBoard): RegionAssignment | null {
     return out;
   };
 
-  const bbox = (region: Set<number>): { minR: number; maxR: number; minC: number; maxC: number } => {
-    let minR = rows, maxR = -1, minC = cols, maxC = -1;
-    for (const idx of region) {
-      const r = Math.floor(idx / cols), c = idx % cols;
-      if (r < minR) minR = r;
-      if (r > maxR) maxR = r;
-      if (c < minC) minC = c;
-      if (c > maxC) maxC = c;
-    }
-    return { minR, maxR, minC, maxC };
-  };
-
-  // Quick partial validity after tentatively adding a cell to a region.
-  function partialValid(ci: number): boolean {
-    const region = regions[ci];
-    const clue = clues[ci];
-    if (clue.size != null && region.size > clue.size) return false;
-    if (clue.kind === 'freeform') return true;
-    // Rectangle kinds: bounding box cells must be either in this region or
-    // still unclaimed (i.e. claimable later).
-    const { minR, maxR, minC, maxC } = bbox(region);
-    const w = maxC - minC + 1;
-    const h = maxR - minR + 1;
-    if (clue.kind === 'square' && w !== h) {
-      // Bounding box is non-square; could become square only by growing the
-      // shorter dimension. That's allowed if there's still room.
-      // But the bbox itself must still be enclosable in a square — i.e. once
-      // the region is "complete", w must equal h. We approximate by allowing
-      // the bbox to be non-square mid-growth, but reject if it exceeds size cap.
-      if (clue.size != null) {
-        const targetSide = Math.round(Math.sqrt(clue.size));
-        if (targetSide * targetSide !== clue.size) return false;
-        if (w > targetSide || h > targetSide) return false;
-      }
-    }
-    if (clue.kind === 'wide' && h > w + 0) {
-      // Could still grow wider; allow for now if sized clue still has room.
-    }
-    if (clue.kind === 'tall' && w > h + 0) {
-      // Same.
-    }
-    // bbox cells must not be claimed by other regions.
-    for (let r = minR; r <= maxR; r++) {
-      for (let c = minC; c <= maxC; c++) {
-        const idx = r * cols + c;
-        if (region.has(idx)) continue;
-        if (ownerOf[idx] !== -1) return false;
-      }
-    }
-    return true;
+  const sizedFreeformTotal = clues
+    .filter((c) => c.kind === 'freeform' && c.size != null)
+    .reduce((s, c) => s + (c.size ?? 0), 0);
+  const rectIndices: number[] = [];
+  const freeformIndices: number[] = [];
+  for (let i = 0; i < clues.length; i++) {
+    if (clues[i].kind === 'freeform') freeformIndices.push(i);
+    else rectIndices.push(i);
   }
+  const rectTotal = TOTAL - sizedFreeformTotal;
 
-  function finalValid(): boolean {
-    for (let ci = 0; ci < clues.length; ci++) {
-      const region = regions[ci];
-      const clue = clues[ci];
-      if (clue.size != null && region.size !== clue.size) return false;
-      if (clue.kind === 'freeform') continue;
-      const { minR, maxR, minC, maxC } = bbox(region);
-      const w = maxC - minC + 1;
-      const h = maxR - minR + 1;
-      if (region.size !== w * h) return false;
-      if (clue.kind === 'square' && w !== h) return false;
-      if (clue.kind === 'wide' && w <= h) return false;
-      if (clue.kind === 'tall' && h <= w) return false;
-    }
-    return true;
-  }
+  const rectPlacements: number[][][] = rectIndices.map((idx) =>
+    enumerateRects(clues[idx], rows, cols, allClueCells),
+  );
+  // Order by ascending placement count so the most constrained clue is
+  // chosen first.
+  const rectOrder = rectIndices.map((_, i) => i);
+  rectOrder.sort((a, b) => rectPlacements[a].length - rectPlacements[b].length);
 
-  let claimed = clues.length;
+  const ownerOf = new Int32Array(TOTAL).fill(-1);
+  for (let i = 0; i < clues.length; i++) ownerOf[clues[i].cellIdx] = i;
+  const chosenRect: (number[] | null)[] = rectIndices.map(() => null);
+  const claimedRectCells = new Set<number>();
 
-  function backtrack(): boolean {
-    if (claimed === total) return finalValid();
-    // Pick the most-constrained unclaimed cell that is adjacent to ≥1 region.
-    let bestCell = -1;
-    let bestOpts: number[] = [];
-    let bestCount = Infinity;
-    for (let i = 0; i < total; i++) {
-      if (ownerOf[i] !== -1) continue;
-      const candSet = new Set<number>();
-      for (const n of adjOf(i)) {
-        if (ownerOf[n] !== -1) candSet.add(ownerOf[n]);
-      }
-      if (candSet.size === 0) continue;
-      const valid: number[] = [];
-      for (const ci of candSet) {
-        const clue = clues[ci];
-        if (clue.size != null && regions[ci].size >= clue.size) continue;
-        valid.push(ci);
-      }
-      if (valid.length === 0) return false;
-      if (valid.length < bestCount) {
-        bestCount = valid.length;
-        bestCell = i;
-        bestOpts = valid;
-        if (bestCount === 1) break;
-      }
+  function tryRectangles(orderIdx: number, claimedSize: number): boolean {
+    if (orderIdx === rectIndices.length) {
+      if (claimedSize !== rectTotal) return false;
+      return tryFreeforms();
     }
-    if (bestCell === -1) {
-      // No cell adjacent to any region: there are unclaimed cells unreachable.
-      return false;
-    }
-    for (const ci of bestOpts) {
-      regions[ci].add(bestCell);
-      ownerOf[bestCell] = ci;
-      claimed++;
-      if (partialValid(ci) && backtrack()) return true;
-      regions[ci].delete(bestCell);
-      ownerOf[bestCell] = -1;
-      claimed--;
+    const rectIdx = rectOrder[orderIdx];
+    const clueGlobalIdx = rectIndices[rectIdx];
+    const ownClueCell = clues[clueGlobalIdx].cellIdx;
+    for (const placement of rectPlacements[rectIdx]) {
+      if (claimedSize + placement.length > rectTotal) continue;
+      let bad = false;
+      for (const c of placement) {
+        if (c === ownClueCell) continue;
+        if (claimedRectCells.has(c) || allClueCells.has(c)) { bad = true; break; }
+      }
+      if (bad) continue;
+      for (const c of placement) if (c !== ownClueCell) {
+        claimedRectCells.add(c);
+        ownerOf[c] = clueGlobalIdx;
+      }
+      chosenRect[rectIdx] = placement;
+      if (tryRectangles(orderIdx + 1, claimedSize + placement.length)) return true;
+      for (const c of placement) if (c !== ownClueCell) {
+        claimedRectCells.delete(c);
+        ownerOf[c] = -1;
+      }
+      chosenRect[rectIdx] = null;
     }
     return false;
   }
 
-  if (!backtrack()) return null;
-  return {
-    ownerOf,
-    regions: regions.map((s) => [...s]),
-  };
+  function tryFreeforms(): boolean {
+    // Available cells: TOTAL minus rectangle-claimed minus all clue cells.
+    const available = new Set<number>();
+    for (let i = 0; i < TOTAL; i++) {
+      if (claimedRectCells.has(i)) continue;
+      if (allClueCells.has(i)) continue;
+      available.add(i);
+    }
+    const freeformRegions: Set<number>[] = freeformIndices.map(
+      (gi) => new Set([clues[gi].cellIdx]),
+    );
+
+    function backtrack(): boolean {
+      let bestCell = -1, bestOpts: number[] = [], bestN = Infinity;
+      for (const i of available) {
+        if (ownerOf[i] !== -1) continue;
+        const cands = new Set<number>();
+        for (const n of adj(i)) {
+          const owner = ownerOf[n];
+          if (owner === -1) continue;
+          if (clues[owner].kind !== 'freeform') continue;
+          const localIdx = freeformIndices.indexOf(owner);
+          if (localIdx === -1) continue;
+          const c = clues[owner];
+          if (c.size != null && freeformRegions[localIdx].size >= c.size) continue;
+          cands.add(owner);
+        }
+        if (cands.size === 0) continue;
+        const arr = [...cands];
+        if (arr.length < bestN) {
+          bestN = arr.length;
+          bestCell = i;
+          bestOpts = arr;
+          if (bestN === 1) break;
+        }
+      }
+      if (bestCell === -1) {
+        // Done if all available cells are claimed and freeform sizes match.
+        for (const i of available) if (ownerOf[i] === -1) return false;
+        for (let li = 0; li < freeformIndices.length; li++) {
+          const c = clues[freeformIndices[li]];
+          if (c.size != null && freeformRegions[li].size !== c.size) return false;
+        }
+        return true;
+      }
+      for (const owner of bestOpts) {
+        const localIdx = freeformIndices.indexOf(owner);
+        freeformRegions[localIdx].add(bestCell);
+        ownerOf[bestCell] = owner;
+        if (backtrack()) return true;
+        freeformRegions[localIdx].delete(bestCell);
+        ownerOf[bestCell] = -1;
+      }
+      return false;
+    }
+
+    return backtrack();
+  }
+
+  if (rectIndices.length === 0) {
+    if (!tryFreeforms()) return null;
+  } else {
+    if (!tryRectangles(0, 0)) return null;
+  }
+
+  const regions: number[][] = clues.map(() => []);
+  for (let i = 0; i < TOTAL; i++) {
+    const o = ownerOf[i];
+    if (o !== -1) regions[o].push(i);
+  }
+  return { ownerOf, regions };
+}
+
+function enumerateRects(
+  clue: Clue,
+  rows: number,
+  cols: number,
+  allClueCells: Set<number>,
+): number[][] {
+  const cr = clue.row, cc = clue.col;
+  const sizes: { w: number; h: number }[] = [];
+  if (clue.kind === 'square') {
+    if (clue.size != null) {
+      const s = Math.round(Math.sqrt(clue.size));
+      if (s * s === clue.size && s >= 1 && s <= Math.min(rows, cols)) sizes.push({ w: s, h: s });
+    } else {
+      for (let s = 1; s <= Math.min(rows, cols); s++) sizes.push({ w: s, h: s });
+    }
+  } else if (clue.kind === 'wide') {
+    for (let w = 2; w <= cols; w++) {
+      for (let h = 1; h < w && h <= rows; h++) {
+        if (clue.size != null && w * h !== clue.size) continue;
+        sizes.push({ w, h });
+      }
+    }
+  } else if (clue.kind === 'tall') {
+    for (let h = 2; h <= rows; h++) {
+      for (let w = 1; w < h && w <= cols; w++) {
+        if (clue.size != null && w * h !== clue.size) continue;
+        sizes.push({ w, h });
+      }
+    }
+  }
+  const out: number[][] = [];
+  for (const { w, h } of sizes) {
+    const minR = Math.max(0, cr - (h - 1));
+    const maxR = Math.min(rows - h, cr);
+    const minC = Math.max(0, cc - (w - 1));
+    const maxC = Math.min(cols - w, cc);
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
+        const cells: number[] = [];
+        let bad = false;
+        for (let dr = 0; dr < h && !bad; dr++) {
+          for (let dc = 0; dc < w && !bad; dc++) {
+            const idx = (r + dr) * cols + (c + dc);
+            if (allClueCells.has(idx) && idx !== clue.cellIdx) { bad = true; break; }
+            cells.push(idx);
+          }
+        }
+        if (!bad) out.push(cells);
+      }
+    }
+  }
+  return out;
 }
