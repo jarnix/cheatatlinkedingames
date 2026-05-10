@@ -51,9 +51,6 @@ export function readGrid(): Grid | null {
 }
 
 function inferColsFromStyleVar(container: HTMLElement): number | null {
-  // The grid container has a hashed CSS custom property holding the column count,
-  // e.g. style="--ze580797: 8;". The variable name is hashed per-build, so we
-  // pull the first integer value from any inline custom property.
   const inline = container.getAttribute('style') ?? '';
   const m = inline.match(/--[\w-]+\s*:\s*(\d+)/);
   return m ? Number(m[1]) : null;
