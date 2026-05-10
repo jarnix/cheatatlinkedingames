@@ -1,4 +1,4 @@
-import type { Clue, PatchesBoard, ShapeKind } from './read-board';
+import type { Clue, PatchesBoard } from './read-board';
 
 export type RegionAssignment = {
   /** For each cell index, the index of the clue/region it belongs to. */
@@ -40,16 +40,12 @@ export function solve(board: PatchesBoard): RegionAssignment | null {
     return out;
   };
 
-  const sizedFreeformTotal = clues
-    .filter((c) => c.kind === 'freeform' && c.size != null)
-    .reduce((s, c) => s + (c.size ?? 0), 0);
-  const rectIndices: number[] = [];
+  // 'freeform' is just a rectangle of any aspect at the given size, not a
+  // polyomino — the game's drag interpreter treats every gesture as a
+  // start→end bounding rectangle, so all four kinds are rectangle clues.
+  const rectIndices: number[] = clues.map((_, i) => i);
   const freeformIndices: number[] = [];
-  for (let i = 0; i < clues.length; i++) {
-    if (clues[i].kind === 'freeform') freeformIndices.push(i);
-    else rectIndices.push(i);
-  }
-  const rectTotal = TOTAL - sizedFreeformTotal;
+  const rectTotal = TOTAL;
 
   const rectPlacements: number[][][] = rectIndices.map((idx) =>
     enumerateRects(clues[idx], rows, cols, allClueCells),
@@ -197,15 +193,31 @@ function enumerateRects(
         sizes.push({ w, h });
       }
     }
+  } else if (clue.kind === 'freeform') {
+    // Any rectangle whose area matches the size. Both square and non-square
+    // are allowed (the legend's "any of the above" wildcard).
+    if (clue.size == null) return []; // shouldn't happen — freeforms always carry a number
+    for (let w = 1; w <= cols; w++) {
+      for (let h = 1; h <= rows; h++) {
+        if (w * h !== clue.size) continue;
+        sizes.push({ w, h });
+      }
+    }
   }
   const out: number[][] = [];
   for (const { w, h } of sizes) {
-    const minR = Math.max(0, cr - (h - 1));
-    const maxR = Math.min(rows - h, cr);
-    const minC = Math.max(0, cc - (w - 1));
-    const maxC = Math.min(cols - w, cc);
-    for (let r = minR; r <= maxR; r++) {
-      for (let c = minC; c <= maxC; c++) {
+    // Only placements where the clue sits at one of the four corners. The
+    // game's drag interpreter creates a rectangle from touchStart to touchEnd,
+    // so single-drag play needs the clue to be at a corner — otherwise we'd
+    // have to multi-drag, and the game drops most chained drags.
+    const candidateTops = new Set<number>();
+    if (cr + h <= rows) candidateTops.add(cr);              // clue at top edge
+    if (cr - h + 1 >= 0) candidateTops.add(cr - h + 1);     // clue at bottom edge
+    const candidateLefts = new Set<number>();
+    if (cc + w <= cols) candidateLefts.add(cc);             // clue at left edge
+    if (cc - w + 1 >= 0) candidateLefts.add(cc - w + 1);    // clue at right edge
+    for (const r of candidateTops) {
+      for (const c of candidateLefts) {
         const cells: number[] = [];
         let bad = false;
         for (let dr = 0; dr < h && !bad; dr++) {
