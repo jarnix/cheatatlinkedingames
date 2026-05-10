@@ -122,7 +122,11 @@ async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<vo
     const SUB_MS = 15;
     const POST_TOUCHSTART_MS = 80;
     const PRE_TOUCHEND_MS = 50;
-    const BETWEEN_DRAGS_MS = 150;
+    // Long gap between drags so the game finishes processing each gesture
+    // (and the resulting React re-render) before the next touchStart.
+    // Freeform regions can produce 10+ small BFS drags; without this gap the
+    // game appears to drop most of them.
+    const BETWEEN_DRAGS_MS = 400;
     let touchId = 1;
     for (let d = 0; d < msg.drags.length; d++) {
       const points = msg.drags[d];
