@@ -23,6 +23,12 @@ type TangoFillMessage = {
   gapMs: number;
 };
 
+type QueensPlaceMessage = {
+  type: 'queens-place';
+  clicks: Array<{ x: number; y: number }>;
+  gapMs: number;
+};
+
 type IncomingMessage =
   | ZipPlayMessage
   | SudokuFillMessage
@@ -42,6 +48,7 @@ export default defineBackground(() => {
     else if (isSudokuFill(msg)) { kind = 'sudoku-fill'; work = sudokuFill(tabId, msg); }
     else if (isPatchesPaint(msg)) { kind = 'patches-paint'; work = patchesPaint(tabId, msg); }
     else if (isTangoFill(msg)) { kind = 'tango-fill'; work = tangoFill(tabId, msg); }
+    else if (isQueensPlace(msg)) { kind = 'queens-place'; work = queensPlace(tabId, msg); }
     if (!work) return;
 
     console.log(`[bg] ${kind} on tab ${tabId} — starting`);
@@ -206,6 +213,23 @@ async function tangoFill(tabId: number, msg: TangoFillMessage): Promise<void> {
   }
 }
 
+async function queensPlace(tabId: number, msg: QueensPlaceMessage): Promise<void> {
+  const target = await attachDebugger(tabId, 'queens-place');
+  try {
+    for (const c of msg.clicks) {
+      await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed', x: c.x, y: c.y, button: 'left', clickCount: 1,
+      });
+      await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x: c.x, y: c.y, button: 'left', clickCount: 1,
+      });
+      await sleep(msg.gapMs);
+    }
+  } finally {
+    await detachDebugger(target, 'queens-place');
+  }
+}
+
 async function click(target: { tabId: number }, p: Point): Promise<void> {
   await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
     type: 'mousePressed',
@@ -257,6 +281,16 @@ function isTangoFill(v: unknown): v is TangoFillMessage {
     typeof v === 'object' &&
     v !== null &&
     (v as { type?: unknown }).type === 'tango-fill' &&
+    Array.isArray((v as { clicks?: unknown }).clicks) &&
+    typeof (v as { gapMs?: unknown }).gapMs === 'number'
+  );
+}
+
+function isQueensPlace(v: unknown): v is QueensPlaceMessage {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { type?: unknown }).type === 'queens-place' &&
     Array.isArray((v as { clicks?: unknown }).clicks) &&
     typeof (v as { gapMs?: unknown }).gapMs === 'number'
   );
