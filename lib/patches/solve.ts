@@ -206,18 +206,16 @@ function enumerateRects(
   }
   const out: number[][] = [];
   for (const { w, h } of sizes) {
-    // Only placements where the clue sits at one of the four corners. The
-    // game's drag interpreter creates a rectangle from touchStart to touchEnd,
-    // so single-drag play needs the clue to be at a corner — otherwise we'd
-    // have to multi-drag, and the game drops most chained drags.
-    const candidateTops = new Set<number>();
-    if (cr + h <= rows) candidateTops.add(cr);              // clue at top edge
-    if (cr - h + 1 >= 0) candidateTops.add(cr - h + 1);     // clue at bottom edge
-    const candidateLefts = new Set<number>();
-    if (cc + w <= cols) candidateLefts.add(cc);             // clue at left edge
-    if (cc - w + 1 >= 0) candidateLefts.add(cc - w + 1);    // clue at right edge
-    for (const r of candidateTops) {
-      for (const c of candidateLefts) {
+    // Any placement of (w, h) that contains the clue cell. Play dispatches a
+    // drag from the rectangle's top-left to its bottom-right corner — the
+    // game derives a bbox from touch start/end and assigns it to whichever
+    // clue sits inside, so we don't need the clue at a corner.
+    const minR = Math.max(0, cr - (h - 1));
+    const maxR = Math.min(rows - h, cr);
+    const minC = Math.max(0, cc - (w - 1));
+    const maxC = Math.min(cols - w, cc);
+    for (let r = minR; r <= maxR; r++) {
+      for (let c = minC; c <= maxC; c++) {
         const cells: number[] = [];
         let bad = false;
         for (let dr = 0; dr < h && !bad; dr++) {

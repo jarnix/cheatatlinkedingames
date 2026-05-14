@@ -25,15 +25,15 @@ export async function play(board: PatchesBoard, assignment: RegionAssignment): P
 }
 
 /**
- * Each region is a rectangle whose corner is the clue cell (the solver
- * enforces this). Play is a single drag from the clue cell to the opposite
- * corner of the rectangle. The game's drag interpreter creates a rectangle
- * from touchStart to touchEnd and assigns it to the clue's region.
+ * Drag from the rectangle's top-left corner to its bottom-right corner. The
+ * game treats every touch gesture as a bbox(touchStart, touchEnd) and assigns
+ * that rectangle to whichever clue sits inside it. The clue doesn't have to
+ * be at a corner — it can be anywhere within the rectangle.
  */
-function buildDragForRegion(board: PatchesBoard, ci: number, cells: number[]): Drag | null {
+function buildDragForRegion(board: PatchesBoard, _ci: number, cells: number[]): Drag | null {
   if (cells.length <= 1) return null;
-  const { rows: _rows, cols } = board;
-  let minR = board.rows, maxR = -1, minC = board.cols, maxC = -1;
+  const { rows, cols } = board;
+  let minR = rows, maxR = -1, minC = cols, maxC = -1;
   for (const idx of cells) {
     const r = Math.floor(idx / cols), c = idx % cols;
     if (r < minR) minR = r;
@@ -41,15 +41,12 @@ function buildDragForRegion(board: PatchesBoard, ci: number, cells: number[]): D
     if (c < minC) minC = c;
     if (c > maxC) maxC = c;
   }
-  const clue = board.clues[ci];
-  // Opposite corner: flip both axes from the clue.
-  const oppR = clue.row === minR ? maxR : minR;
-  const oppC = clue.col === minC ? maxC : minC;
-  const oppIdx = oppR * cols + oppC;
+  const tlIdx = minR * cols + minC;
+  const brIdx = maxR * cols + maxC;
   const at = (idx: number): Point => {
     const el = board.cellElements[idx];
     const r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
   };
-  return [at(clue.cellIdx), at(oppIdx)];
+  return [at(tlIdx), at(brIdx)];
 }
