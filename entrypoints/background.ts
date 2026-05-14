@@ -36,24 +36,53 @@ export default defineBackground(() => {
       sendResponse({ ok: false, error: 'no tabId on sender' });
       return;
     }
+    let kind: string | null = null;
     let work: Promise<void> | null = null;
-    if (isZipPlay(msg)) work = zipPlay(tabId, msg);
-    else if (isSudokuFill(msg)) work = sudokuFill(tabId, msg);
-    else if (isPatchesPaint(msg)) work = patchesPaint(tabId, msg);
-    else if (isTangoFill(msg)) work = tangoFill(tabId, msg);
+    if (isZipPlay(msg)) { kind = 'zip-play'; work = zipPlay(tabId, msg); }
+    else if (isSudokuFill(msg)) { kind = 'sudoku-fill'; work = sudokuFill(tabId, msg); }
+    else if (isPatchesPaint(msg)) { kind = 'patches-paint'; work = patchesPaint(tabId, msg); }
+    else if (isTangoFill(msg)) { kind = 'tango-fill'; work = tangoFill(tabId, msg); }
     if (!work) return;
 
+    console.log(`[bg] ${kind} on tab ${tabId} — starting`);
     work
-      .then(() => sendResponse({ ok: true }))
-      .catch((err: unknown) => sendResponse({ ok: false, error: String(err) }));
+      .then(() => {
+        console.log(`[bg] ${kind} on tab ${tabId} — done`);
+        sendResponse({ ok: true });
+      })
+      .catch((err: unknown) => {
+        console.error(`[bg] ${kind} on tab ${tabId} — error:`, err);
+        sendResponse({ ok: false, error: String(err) });
+      });
     return true;
   });
 });
 
-async function zipPlay(tabId: number, msg: ZipPlayMessage): Promise<void> {
+async function attachDebugger(tabId: number, label: string): Promise<{ tabId: number }> {
   if (!browser.debugger) throw new Error('browser.debugger API not available');
   const target = { tabId };
-  await browser.debugger.attach(target, '1.3');
+  console.log(`[bg] ${label}: attaching debugger to tab ${tabId}`);
+  try {
+    await browser.debugger.attach(target, '1.3');
+    console.log(`[bg] ${label}: debugger attached`);
+  } catch (e) {
+    console.error(`[bg] ${label}: debugger.attach failed`, e);
+    throw e;
+  }
+  return target;
+}
+
+async function detachDebugger(target: { tabId: number }, label: string): Promise<void> {
+  try {
+    await browser.debugger.detach(target);
+    console.log(`[bg] ${label}: debugger detached`);
+  } catch (e) {
+    console.warn(`[bg] ${label}: debugger.detach failed`, e);
+  }
+}
+
+async function zipPlay(tabId: number, msg: ZipPlayMessage): Promise<void> {
+  const target = await attachDebugger(tabId, 'zip-play');
   try {
     await browser.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', {
       enabled: true,
@@ -81,16 +110,12 @@ async function zipPlay(tabId: number, msg: ZipPlayMessage): Promise<void> {
         enabled: false,
       });
     } catch {}
-    try {
-      await browser.debugger.detach(target);
-    } catch {}
+    await detachDebugger(target, 'zip-play');
   }
 }
 
 async function sudokuFill(tabId: number, msg: SudokuFillMessage): Promise<void> {
-  if (!browser.debugger) throw new Error('browser.debugger API not available');
-  const target = { tabId };
-  await browser.debugger.attach(target, '1.3');
+  const target = await attachDebugger(tabId, 'sudoku-fill');
   try {
     for (const { cellPoint, digitPoint } of msg.clicks) {
       await click(target, cellPoint);
@@ -99,16 +124,12 @@ async function sudokuFill(tabId: number, msg: SudokuFillMessage): Promise<void> 
       await sleep(msg.gapMs);
     }
   } finally {
-    try {
-      await browser.debugger.detach(target);
-    } catch {}
+    await detachDebugger(target, 'sudoku-fill');
   }
 }
 
 async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<void> {
-  if (!browser.debugger) throw new Error('browser.debugger API not available');
-  const target = { tabId };
-  await browser.debugger.attach(target, '1.3');
+  const target = await attachDebugger(tabId, 'patches-paint');
   try {
     await browser.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', {
       enabled: true,
@@ -164,16 +185,12 @@ async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<vo
         enabled: false,
       });
     } catch {}
-    try {
-      await browser.debugger.detach(target);
-    } catch {}
+    await detachDebugger(target, 'patches-paint');
   }
 }
 
 async function tangoFill(tabId: number, msg: TangoFillMessage): Promise<void> {
-  if (!browser.debugger) throw new Error('browser.debugger API not available');
-  const target = { tabId };
-  await browser.debugger.attach(target, '1.3');
+  const target = await attachDebugger(tabId, 'tango-fill');
   try {
     for (const c of msg.clicks) {
       await browser.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
@@ -185,9 +202,7 @@ async function tangoFill(tabId: number, msg: TangoFillMessage): Promise<void> {
       await sleep(msg.gapMs);
     }
   } finally {
-    try {
-      await browser.debugger.detach(target);
-    } catch {}
+    await detachDebugger(target, 'tango-fill');
   }
 }
 

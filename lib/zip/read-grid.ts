@@ -24,10 +24,20 @@ export function readGrid(): Grid | null {
   const rows = total / cols;
 
   const waypoints: number[] = [];
+  const detected: Array<{ idx: number; num: number; text: string; aria: string | null }> = [];
   cellNodes.forEach((node, idx) => {
     const num = readWaypointNumber(node);
-    if (num != null) waypoints[num - 1] = idx;
+    if (num != null) {
+      waypoints[num - 1] = idx;
+      detected.push({
+        idx,
+        num,
+        text: (node.textContent ?? '').trim().slice(0, 40),
+        aria: node.getAttribute('aria-label'),
+      });
+    }
   });
+  console.log('[zip-cheat] waypoint cells detected:', detected);
   if (waypoints.length === 0 || waypoints.some((v) => v === undefined)) {
     console.warn('[zip-cheat] missing waypoints', waypoints);
     return null;

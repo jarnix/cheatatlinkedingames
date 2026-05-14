@@ -1,34 +1,27 @@
 import { readBoard } from '../lib/tango/read-board';
 import { solve } from '../lib/tango/solve';
 import { play } from '../lib/tango/play';
+import { autoFire } from '../lib/auto-fire';
 
 export default defineContentScript({
   matches: ['https://www.linkedin.com/games/tango/*'],
   main() {
     let fired = false;
-
-    const tryFire = async (observer: MutationObserver | null) => {
-      if (fired) return;
+    console.log('[tango-cheat] content script loaded');
+    autoFire('tango-cheat', () => {
+      if (fired) return true;
       const board = readBoard();
-      if (!board) return;
+      if (!board) return false;
       const givenCount = board.givens.flat().filter((v) => v != null).length;
-      if (givenCount === 0) return;
+      if (givenCount === 0) return false;
       fired = true;
-      observer?.disconnect();
-
       const solution = solve(board);
       if (!solution) {
         console.warn('[tango-cheat] no solution found');
-        return;
+        return true;
       }
-
-      await play(board, solution);
-    };
-
-    const observer = new MutationObserver(() => tryFire(observer));
-    observer.observe(document.body, { childList: true, subtree: true });
-    void tryFire(observer);
-
-    console.log('[tango-cheat] auto-fire armed');
+      void play(board, solution);
+      return true;
+    });
   },
 });

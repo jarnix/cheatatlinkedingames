@@ -1,32 +1,25 @@
 import { readBoard } from '../lib/patches/read-board';
 import { solve } from '../lib/patches/solve';
 import { play } from '../lib/patches/play';
+import { autoFire } from '../lib/auto-fire';
 
 export default defineContentScript({
   matches: ['https://www.linkedin.com/games/patches/*'],
   main() {
     let fired = false;
-
-    const tryFire = async (observer: MutationObserver | null) => {
-      if (fired) return;
+    console.log('[patches-cheat] content script loaded');
+    autoFire('patches-cheat', () => {
+      if (fired) return true;
       const board = readBoard();
-      if (!board || board.clues.length === 0) return;
+      if (!board || board.clues.length === 0) return false;
       fired = true;
-      observer?.disconnect();
-
-      const placements = solve(board);
-      if (!placements) {
+      const assignment = solve(board);
+      if (!assignment) {
         console.warn('[patches-cheat] no solution found');
-        return;
+        return true;
       }
-
-      await play(board, placements);
-    };
-
-    const observer = new MutationObserver(() => tryFire(observer));
-    observer.observe(document.body, { childList: true, subtree: true });
-    void tryFire(observer);
-
-    console.log('[patches-cheat] auto-read armed');
+      void play(board, assignment);
+      return true;
+    });
   },
 });
