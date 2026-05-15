@@ -29,6 +29,8 @@ type QueensPlaceMessage = {
   gapMs: number;
 };
 
+type CaptureMessage = { type: 'capture-screenshot' };
+
 type IncomingMessage =
   | ZipPlayMessage
   | SudokuFillMessage
@@ -42,6 +44,15 @@ export default defineBackground(() => {
       sendResponse({ ok: false, error: 'no tabId on sender' });
       return;
     }
+    // capture-screenshot returns image data, not just ok/error.
+    if (isCapture(msg)) {
+      console.log(`[bg] capture-screenshot on tab ${tabId}`);
+      captureScreenshot(tabId)
+        .then((data) => sendResponse({ ok: true, data }))
+        .catch((err: unknown) => sendResponse({ ok: false, error: String(err) }));
+      return true;
+    }
+
     let kind: string | null = null;
     let work: Promise<void> | null = null;
     if (isZipPlay(msg)) { kind = 'zip-play'; work = zipPlay(tabId, msg); }
@@ -213,6 +224,20 @@ async function tangoFill(tabId: number, msg: TangoFillMessage): Promise<void> {
   }
 }
 
+async function captureScreenshot(tabId: number): Promise<string> {
+  const target = await attachDebugger(tabId, 'capture-screenshot');
+  try {
+    const result = (await browser.debugger.sendCommand(
+      target,
+      'Page.captureScreenshot',
+      { format: 'png' },
+    )) as { data: string };
+    return result.data; // base64 PNG of the visible viewport
+  } finally {
+    await detachDebugger(target, 'capture-screenshot');
+  }
+}
+
 async function queensPlace(tabId: number, msg: QueensPlaceMessage): Promise<void> {
   const target = await attachDebugger(tabId, 'queens-place');
   try {
@@ -294,6 +319,11 @@ function isQueensPlace(v: unknown): v is QueensPlaceMessage {
     Array.isArray((v as { clicks?: unknown }).clicks) &&
     typeof (v as { gapMs?: unknown }).gapMs === 'number'
   );
+}
+
+function isCapture(v: unknown): v is CaptureMessage {
+  return typeof v === 'object' && v !== null &&
+    (v as { type?: unknown }).type === 'capture-screenshot';
 }
 
 function sleep(ms: number): Promise<void> {

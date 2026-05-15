@@ -1,17 +1,24 @@
 import type { Grid } from './grid';
+import type { Rect } from './walls';
 
 const CONTAINER_SELECTOR = '[data-testid="interactive-grid"]';
 const CELL_SELECTOR = '[data-cell-idx]';
 
-export function readGrid(): Grid | null {
+export type ZipRead = {
+  /** Grid with full 4-neighbour adjacency (walls NOT yet applied). */
+  grid: Grid;
+  /** Viewport-space bounding rect of each cell, in cell-index order. */
+  cellRects: Rect[];
+};
+
+export function readGrid(): ZipRead | null {
   const container = document.querySelector<HTMLElement>(CONTAINER_SELECTOR);
   if (!container) return null;
 
   const cellNodes = Array.from(
     container.querySelectorAll<HTMLElement>(CELL_SELECTOR),
   ).sort(
-    (a, b) =>
-      Number(a.dataset.cellIdx ?? -1) - Number(b.dataset.cellIdx ?? -1),
+    (a, b) => Number(a.dataset.cellIdx ?? -1) - Number(b.dataset.cellIdx ?? -1),
   );
   if (cellNodes.length === 0) return null;
 
@@ -24,17 +31,12 @@ export function readGrid(): Grid | null {
   const rows = total / cols;
 
   const waypoints: number[] = [];
-  const detected: Array<{ idx: number; num: number; text: string; aria: string | null }> = [];
+  const detected: Array<{ idx: number; num: number; text: string }> = [];
   cellNodes.forEach((node, idx) => {
     const num = readWaypointNumber(node);
     if (num != null) {
       waypoints[num - 1] = idx;
-      detected.push({
-        idx,
-        num,
-        text: (node.textContent ?? '').trim().slice(0, 40),
-        aria: node.getAttribute('aria-label'),
-      });
+      detected.push({ idx, num, text: (node.textContent ?? '').trim().slice(0, 20) });
     }
   });
   console.log('[zip-cheat] waypoint cells detected:', detected);
@@ -43,6 +45,7 @@ export function readGrid(): Grid | null {
     return null;
   }
 
+  // Full 4-neighbour adjacency; walls are applied later from a screenshot.
   const adjacency: number[][] = [];
   for (let i = 0; i < total; i++) {
     const row = Math.floor(i / cols);
@@ -52,12 +55,16 @@ export function readGrid(): Grid | null {
     if (row < rows - 1) neighbors.push(i + cols);
     if (col > 0) neighbors.push(i - 1);
     if (col < cols - 1) neighbors.push(i + 1);
-    // TODO: filter out neighbors blocked by a wall — wall encoding TBD.
     adjacency.push(neighbors);
   }
 
+  const cellRects: Rect[] = cellNodes.map((node) => {
+    const r = node.getBoundingClientRect();
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  });
+
   console.log('[zip-cheat] grid read', { rows, cols, waypoints });
-  return { rows, cols, waypoints, adjacency };
+  return { grid: { rows, cols, waypoints, adjacency }, cellRects };
 }
 
 function inferColsFromStyleVar(container: HTMLElement): number | null {
@@ -77,14 +84,8 @@ function inferColsFromLayout(cells: HTMLElement[]): number | null {
 }
 
 function readWaypointNumber(node: HTMLElement): number | null {
-  // Prefer the visible digit in the cell text — that is locale-independent.
-  // aria-label on some locales reads "Row 3, column 7" first and the cell's
-  // number second, so a generic /\d+/ would grab the row number instead of
-  // the waypoint.
   const text = (node.textContent ?? '').trim();
   if (/^\d+$/.test(text)) return Number(text);
-  // Aria fallback. Match a digit that immediately follows a "number" keyword,
-  // not an arbitrary digit anywhere in the label.
   const label = node.getAttribute('aria-label') ?? '';
   const m = label.match(/(?:Numéro|Numero|Number|Waypoint|N°)\s*(\d+)/i);
   return m ? Number(m[1]) : null;

@@ -8,7 +8,10 @@
 //
 // Connects to the first tab matching linkedin.com/games/zip on http://localhost:9222.
 
-const TARGET_URL_MATCH = /linkedin\.com\/games\//;
+// Optionally narrow to one game with CDP_GAME=zip (etc); default matches any.
+const TARGET_URL_MATCH = process.env.CDP_GAME
+  ? new RegExp(`linkedin\\.com/games/${process.env.CDP_GAME}`)
+  : /linkedin\.com\/games\//;
 const CDP_HOST = 'http://localhost:9222';
 
 const targets = await fetch(`${CDP_HOST}/json/list`).then((r) => r.json());
