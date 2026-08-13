@@ -7,6 +7,14 @@ type Point = { x: number; y: number };
  * dispatch the number of clicks needed to go from its current state to the
  * target state (queen on the placement, empty otherwise).
  */
+/**
+ * Clicks get dropped when they come too fast — measured on the live 9x9 board:
+ * 400ms placed all 9 queens, 150ms placed none at all. (25ms also placed all 9,
+ * so the failure isn't monotonic in the gap; it's timing-sensitive rather than
+ * a simple threshold.) 400ms is the value actually verified end-to-end.
+ */
+const CLICK_GAP_MS = 400;
+
 const CLICKS_TO_REACH: Record<CellState, Record<CellState, number>> = {
   empty: { empty: 0, cross: 1, queen: 2 },
   cross: { empty: 2, cross: 0, queen: 1 },
@@ -34,7 +42,7 @@ export async function play(board: QueensBoard, placement: number[]): Promise<voi
   const response = (await browser.runtime.sendMessage({
     type: 'queens-place',
     clicks,
-    gapMs: 25,
+    gapMs: CLICK_GAP_MS,
   })) as { ok: boolean; error?: string } | undefined;
 
   if (!response?.ok) {
