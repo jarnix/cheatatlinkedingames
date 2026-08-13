@@ -29,6 +29,11 @@ type QueensPlaceMessage = {
   gapMs: number;
 };
 
+type WendPlayMessage = {
+  type: 'wend-play';
+  drags: Point[][];
+};
+
 type CaptureMessage = { type: 'capture-screenshot' };
 
 type IncomingMessage =
@@ -60,6 +65,7 @@ export default defineBackground(() => {
     else if (isPatchesPaint(msg)) { kind = 'patches-paint'; work = patchesPaint(tabId, msg); }
     else if (isTangoFill(msg)) { kind = 'tango-fill'; work = tangoFill(tabId, msg); }
     else if (isQueensPlace(msg)) { kind = 'queens-place'; work = queensPlace(tabId, msg); }
+    else if (isWendPlay(msg)) { kind = 'wend-play'; work = wendPlay(tabId, msg); }
     if (!work) return;
 
     console.log(`[bg] ${kind} on tab ${tabId} — starting`);
@@ -146,65 +152,83 @@ async function sudokuFill(tabId: number, msg: SudokuFillMessage): Promise<void> 
   }
 }
 
-async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<void> {
-  const target = await attachDebugger(tabId, 'patches-paint');
+/**
+ * Replay a sequence of touch drags. The settings below were tuned empirically
+ * on Patches — flat cell-to-cell hops miss intermediate cells, so we
+ * interpolate, and touchEnd must include the lifted point or the next
+ * touchStart looks like a multi-touch. The gap between drags lets the game
+ * finish each gesture (and its React re-render) before the next one starts;
+ * without it most drags get dropped.
+ */
+async function dispatchDrags(target: { tabId: number }, drags: Point[][]): Promise<void> {
+  const STEPS = 6;
+  const SUB_MS = 15;
+  const POST_TOUCHSTART_MS = 80;
+  const PRE_TOUCHEND_MS = 50;
+  const BETWEEN_DRAGS_MS = 400;
+  let touchId = 1;
+  for (let d = 0; d < drags.length; d++) {
+    const points = drags[d];
+    if (points.length === 0) continue;
+    const id = touchId++;
+    await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
+      type: 'touchStart',
+      touchPoints: [{ x: points[0].x, y: points[0].y, id }],
+    });
+    await sleep(POST_TOUCHSTART_MS);
+    let lastX = points[0].x, lastY = points[0].y;
+    for (let p = 1; p < points.length; p++) {
+      const from = points[p - 1], to = points[p];
+      for (let s = 1; s <= STEPS; s++) {
+        const t = s / STEPS;
+        lastX = from.x + (to.x - from.x) * t;
+        lastY = from.y + (to.y - from.y) * t;
+        await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
+          type: 'touchMove',
+          touchPoints: [{ x: lastX, y: lastY, id }],
+        });
+        await sleep(SUB_MS);
+      }
+    }
+    await sleep(PRE_TOUCHEND_MS);
+    await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
+      type: 'touchEnd',
+      touchPoints: [{ x: lastX, y: lastY, id }],
+    });
+    if (d < drags.length - 1) await sleep(BETWEEN_DRAGS_MS);
+  }
+}
+
+async function withTouchDrags(
+  tabId: number,
+  label: string,
+  drags: Point[][],
+): Promise<void> {
+  const target = await attachDebugger(tabId, label);
   try {
     await browser.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', {
       enabled: true,
       maxTouchPoints: 1,
     });
-    // Each drag is a Hamiltonian path through one shape, starting at its clue
-    // cell. The settings below were tuned empirically — flat cell-to-cell hops
-    // miss intermediate cells, so we interpolate. touchEnd must include the
-    // lifted point or the next touchStart looks like a multi-touch.
-    const STEPS = 6;
-    const SUB_MS = 15;
-    const POST_TOUCHSTART_MS = 80;
-    const PRE_TOUCHEND_MS = 50;
-    // Long gap between drags so the game finishes processing each gesture
-    // (and the resulting React re-render) before the next touchStart.
-    // Freeform regions can produce 10+ small BFS drags; without this gap the
-    // game appears to drop most of them.
-    const BETWEEN_DRAGS_MS = 400;
-    let touchId = 1;
-    for (let d = 0; d < msg.drags.length; d++) {
-      const points = msg.drags[d];
-      if (points.length === 0) continue;
-      const id = touchId++;
-      await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
-        type: 'touchStart',
-        touchPoints: [{ x: points[0].x, y: points[0].y, id }],
-      });
-      await sleep(POST_TOUCHSTART_MS);
-      let lastX = points[0].x, lastY = points[0].y;
-      for (let p = 1; p < points.length; p++) {
-        const from = points[p - 1], to = points[p];
-        for (let s = 1; s <= STEPS; s++) {
-          const t = s / STEPS;
-          lastX = from.x + (to.x - from.x) * t;
-          lastY = from.y + (to.y - from.y) * t;
-          await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
-            type: 'touchMove',
-            touchPoints: [{ x: lastX, y: lastY, id }],
-          });
-          await sleep(SUB_MS);
-        }
-      }
-      await sleep(PRE_TOUCHEND_MS);
-      await browser.debugger.sendCommand(target, 'Input.dispatchTouchEvent', {
-        type: 'touchEnd',
-        touchPoints: [{ x: lastX, y: lastY, id }],
-      });
-      if (d < msg.drags.length - 1) await sleep(BETWEEN_DRAGS_MS);
-    }
+    await dispatchDrags(target, drags);
   } finally {
     try {
       await browser.debugger.sendCommand(target, 'Emulation.setTouchEmulationEnabled', {
         enabled: false,
       });
     } catch {}
-    await detachDebugger(target, 'patches-paint');
+    await detachDebugger(target, label);
   }
+}
+
+async function patchesPaint(tabId: number, msg: PatchesPaintMessage): Promise<void> {
+  // Each drag is a Hamiltonian path through one shape, starting at its clue cell.
+  await withTouchDrags(tabId, 'patches-paint', msg.drags);
+}
+
+async function wendPlay(tabId: number, msg: WendPlayMessage): Promise<void> {
+  // Each drag traces one word through its letter tiles.
+  await withTouchDrags(tabId, 'wend-play', msg.drags);
 }
 
 async function tangoFill(tabId: number, msg: TangoFillMessage): Promise<void> {
@@ -318,6 +342,15 @@ function isQueensPlace(v: unknown): v is QueensPlaceMessage {
     (v as { type?: unknown }).type === 'queens-place' &&
     Array.isArray((v as { clicks?: unknown }).clicks) &&
     typeof (v as { gapMs?: unknown }).gapMs === 'number'
+  );
+}
+
+function isWendPlay(v: unknown): v is WendPlayMessage {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (v as { type?: unknown }).type === 'wend-play' &&
+    Array.isArray((v as { drags?: unknown }).drags)
   );
 }
 
